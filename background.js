@@ -17,15 +17,33 @@ const DEFAULT_DOMAINS = [
   'seekingalpha.com'
 ];
 
-// Initialize storage with default domains
+const ARCHIVE_DOMAINS = ['archive.ph', 'archive.is', 'archive.today'];
+
+// Initialize storage and context menu on install
 chrome.runtime.onInstalled.addListener(() => {
   chrome.storage.sync.get(['paywalledDomains', 'enabled'], (result) => {
+    if (chrome.runtime.lastError) {
+      console.error('Storage error:', chrome.runtime.lastError);
+      return;
+    }
+
+    const updates = {};
     if (!result.paywalledDomains) {
-      chrome.storage.sync.set({ paywalledDomains: DEFAULT_DOMAINS });
+      updates.paywalledDomains = DEFAULT_DOMAINS;
     }
     if (result.enabled === undefined) {
-      chrome.storage.sync.set({ enabled: true });
+      updates.enabled = true;
     }
+    if (Object.keys(updates).length > 0) {
+      chrome.storage.sync.set(updates);
+    }
+  });
+
+  // Create context menu on install (not on every service worker restart)
+  chrome.contextMenus.create({
+    id: 'archive-page',
+    title: 'View on archive.ph',
+    contexts: ['page']
   });
 });
 
@@ -36,6 +54,16 @@ function isPaywalledSite(url, domains) {
     return domains.some(domain =>
       hostname === domain || hostname.endsWith('.' + domain)
     );
+  } catch {
+    return false;
+  }
+}
+
+// Check if URL is an archive site
+function isArchiveSite(url) {
+  try {
+    const hostname = new URL(url).hostname;
+    return ARCHIVE_DOMAINS.some(d => hostname === d || hostname.endsWith('.' + d));
   } catch {
     return false;
   }
@@ -68,35 +96,33 @@ chrome.webNavigation.onBeforeNavigate.addListener(async (details) => {
 
   const url = details.url;
 
-  // Skip if already on archive.ph
-  if (url.includes('archive.ph') || url.includes('archive.is') || url.includes('archive.today')) {
+  // Skip if already on archive site
+  if (isArchiveSite(url)) {
     return;
   }
 
   // Get settings
-  const { paywalledDomains, enabled } = await chrome.storage.sync.get(['paywalledDomains', 'enabled']);
+  const result = await chrome.storage.sync.get(['paywalledDomains', 'enabled']);
+  if (chrome.runtime.lastError) {
+    console.error('Storage error:', chrome.runtime.lastError);
+    return;
+  }
 
-  if (!enabled) return;
+  if (!result.enabled) return;
 
-  const domains = paywalledDomains || DEFAULT_DOMAINS;
+  const domains = result.paywalledDomains || DEFAULT_DOMAINS;
 
   if (isPaywalledSite(url, domains) && isDeeplink(url)) {
-    // Redirect to archive.ph
-    const archiveUrl = 'https://archive.ph/' + encodeURIComponent(url);
+    // Redirect to archive.ph (no encoding - archive.ph expects raw URL)
+    const archiveUrl = 'https://archive.ph/' + url;
     chrome.tabs.update(details.tabId, { url: archiveUrl });
   }
 });
 
-// Add context menu to manually archive current page
-chrome.contextMenus.create({
-  id: 'archive-page',
-  title: 'View on archive.ph',
-  contexts: ['page']
-});
-
+// Handle context menu clicks
 chrome.contextMenus.onClicked.addListener((info, tab) => {
-  if (info.menuItemId === 'archive-page' && tab.url) {
-    const archiveUrl = 'https://archive.ph/' + encodeURIComponent(tab.url);
+  if (info.menuItemId === 'archive-page' && tab?.url && tab?.id) {
+    const archiveUrl = 'https://archive.ph/' + tab.url;
     chrome.tabs.update(tab.id, { url: archiveUrl });
   }
 });
